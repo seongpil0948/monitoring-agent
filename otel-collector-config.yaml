@@ -1,0 +1,164 @@
+receivers:
+  otlp:
+    protocols:
+      grpc:
+        endpoint: 0.0.0.0:4317
+      http:
+        endpoint: 0.0.0.0:4318
+  # "$remote_addr - $remote_user [$time_local] $http_host \"$request\" $status $body_bytes_sent $request_time \"$http_referer\" \"$http_user_agent\" $upstream_addr $upstream_status $upstream_response_time \"$upstream_scheme://$upstream_host$upstream_uri\""
+  filelog/access:
+    include:
+      - /var/log/apisix/access.log
+    start_at: beginning
+    force_flush_period: 500ms
+    encoding: utf-8
+    preserve_leading_whitespaces: false
+    preserve_trailing_whitespaces: false
+    include_file_name: true
+    include_file_path: false
+    poll_interval: 1000ms
+    initial_buffer_size: 32KiB
+    max_log_size: 1MiB
+    max_concurrent_files: 1024
+    max_batches: 0
+    delete_after_read: false
+    acquire_fs_lock: false
+    attributes: {}
+    resource: {}
+    operators:
+      - type: regex_parser
+        # ^(?<client>\S+)\s+-\s+-\s+\[(?<datetime>[^\]]+)\]\s+(?<host>\S+)\s+"(?<request>[^"]+)"\s+(?<status>\d{3})\s+(?<bytes>\d+)\s+(?<req_time>[\d\.]+)\s+"(?<referrer>[^"]*)"\s+"(?<user_agent>[^"]*)"\s+(?<field1>\S+)\s+(?<field2>\S+)\s+(?<field3>\S+)\s+"(?<url>[^"]+)"$
+        # Nginx access log 예시: "$remote_addr - $remote_user [$time_local] $http_host \"$request\" $status $body_bytes_sent $request_time \"$http_referer\" \"$http_user_agent\" $upstream_addr $upstream_status $upstream_response_time \"$upstream_scheme://$upstream_host$upstream_uri\""
+        regex: '^(?P<client_ip>\S+) \S+ \S+ \[(?P<timestamp>[^\]]+)\] (?P<host>\S+) "(?P<http_method>\S+) (?P<url>[^"]+) HTTP/(?P<http_version>\S+)" (?P<status_code>\d+) (?P<body_bytes>\d+) (?P<response_time>\S+) "(?P<referrer>[^"]*)" "(?P<user_agent>[^"]*)" (?P<upstream_addr>\S+) (?P<upstream_status>\S+) (?P<upstream_response_time>\S+) "(?P<forwarded_url>[^"]*)"$'
+        timestamp:
+          parse_from: attributes.timestamp
+          layout_type: strptime
+          layout: '%d/%b/%Y:%H:%M:%S %z'# e.g. 26/Feb/2025:02:48:09 +0000
+    storage: file_storage # use persistent storage for offset tracking&#8203;:contentReference[oaicite:5]{index=5}
+    fingerprint_size: 1kb # fingerprint size for file identity (default 1KB)&#8203;:contentReference[oaicite:6]{index=6}
+    retry_on_failure: # retry sending logs if downstream export fails&#8203;:contentReference[oaicite:7]{index=7}
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      max_elapsed_time: 5m
+
+  filelog/error:
+    include:
+      - /var/log/apisix/error.log
+    start_at: beginning
+    force_flush_period: 500ms
+    encoding: utf-8
+    preserve_leading_whitespaces: false
+    preserve_trailing_whitespaces: false
+    include_file_name: true
+    include_file_path: false
+    poll_interval: 200ms
+    fingerprint_size: 1kb
+    initial_buffer_size: 16KiB
+    max_log_size: 1MiB
+    max_concurrent_files: 1024
+    max_batches: 2
+    delete_after_read: false
+    acquire_fs_lock: false
+    attributes: {}
+    resource: {}
+    operators:
+      - type: regex_parser
+        regex: '^(?P<timestamp>\d{4}/\d{2}/\d{2} \d{2}:\d{2}:\d{2}) \[(?P<level>\w+)\] (?P<message>.*)'
+        timestamp:
+          parse_from: attributes.timestamp
+          layout: "%Y/%m/%d %H:%M:%S"
+        severity:
+          parse_from: attributes.level
+          # The error description (text before "client:") remains in the log body or can be captured with an additional regex if needed.
+    storage: file_storage
+    retry_on_failure:
+      enabled: true
+      initial_interval: 1s
+      max_interval: 30s
+      max_elapsed_time: 5m
+
+processors:
+  batch:
+    timeout: 1s
+    send_batch_size: 1024
+
+  resource:
+    attributes:
+      - key: service.name
+        value: apisix
+        action: upsert
+      - key: env
+        value: prod
+        action: upsert
+
+  transform:
+    error_mode: ignore
+    trace_statements:
+      - 'set(resource.attributes["req_id"], resource.attributes["request_id"]) where resource.attributes["request_id"] != nil and IsString(resource.attributes["request_id"])'
+    log_statements:
+      - 'set(resource.attributes["test"], "pass")'
+      - 'set(scope.attributes["test"], ["pass"])'
+      - 'set(log.attributes["test"], true)'
+      - 'set(log.severity_number, SEVERITY_NUMBER_INFO) where IsString(log.body) and IsMatch(log.body, "\\sINFO\\s")'
+      - 'set(log.severity_number, SEVERITY_NUMBER_WARN) where IsString(log.body) and IsMatch(log.body, "\\sWARN\\s")'
+      - 'set(log.severity_number, SEVERITY_NUMBER_ERROR) where IsString(log.body) and IsMatch(log.body, "\\sERROR\\s")'
+
+exporters:
+  debug:
+    verbosity: detailed
+
+  otlp:
+    endpoint: "10.101.91.145:4317"
+    tls:
+      insecure: true
+
+  file/logs/acess:
+    path: "/tmp/signal-data/acess.log"
+    rotation:
+      max_megabytes: 10
+      max_days: 3
+      max_backups: 3
+      localtime: true
+  file/logs/error:
+    path: "/tmp/signal-data/error.json"
+    rotation:
+      max_megabytes: 10
+      max_days: 3
+      max_backups: 3
+      localtime: true
+  file/traces:
+    path: "/tmp/signal-data/traces.json"
+    rotation:
+      max_megabytes: 10
+      max_days: 3
+      max_backups: 3
+      localtime: true
+
+service:
+  extensions: [file_storage]
+  pipelines:
+    traces:
+      receivers: [otlp]
+      processors: [batch, resource]
+      exporters: [otlp, file/traces, debug]
+
+    logs/access:
+      receivers: [filelog/access]
+      processors: [batch, resource, transform]
+      exporters: [otlp, file/logs/acess]
+
+    logs/error:
+      receivers: [filelog/error]
+      processors: [batch, resource, transform]
+      exporters: [otlp, file/logs/error]
+
+extensions:
+  file_storage:
+    directory: /tmp/file-storage
+    # timeout: 1s
+    # compaction:
+    #   on_start: true
+    #   directory: /tmp/file-storage/compacted
+    #   max_transaction_size: 65_536
+    # fsync: false
